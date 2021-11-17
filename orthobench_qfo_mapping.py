@@ -1,9 +1,15 @@
+import collections
 import os
 import re
 import sys
 import glob
-import urllib
 import tarfile
+import gzip
+
+try:
+    from urllib.request import urlretrieve
+except ImportError:
+    from urllib import urlretrieve
 
 """
 Version 1
@@ -205,15 +211,34 @@ def find_matches(seq_ob, seqs_qfo, d_ob_2_qfo):
     print("%d found" % len(found))
     print("%d not found" % (len(tr_set) - len(found)))
 
+
+def write_mapping_file(out, d_gene_2_prot_ob, seqs_qfo, d_ob_2_qfo):
+    print("Find Orthobench genes")
+    print("%d genes" % len(d_gene_2_prot_ob))
+    translated = [d_ob_2_qfo[s] for s in d_gene_2_prot_ob if s in d_ob_2_qfo]
+    print("%d translated" % len(translated))
+    count_translated = collections.Counter(translated)
+    print("{} genes map to same transcript -> remove those".format(sum(1 for x, v in count_translated.items() if v > 1)))
+    tr_set = set(translated) - set((k for k, v in count_translated.items() if v > 1))
+    print("%d uniquely translated" % len(tr_set))
+    found = tr_set.intersection(seqs_qfo)
+    print("%d found" % len(found))
+    print("%d not found" % (len(tr_set) - len(found)))
+    for ob_id, qfo_id in d_ob_2_qfo.items():
+        if qfo_id in found and ob_id in d_gene_2_prot_ob:
+            out.write("{}\t{}\n".format(d_gene_2_prot_ob[ob_id], qfo_id))
+
+
 if __name__ == "__main__":
     # Download data 
     url_qfo = "https://ftp.ebi.ac.uk/pub/databases/reference_proteomes/QfO/QfO_release_2021_03.tar.gz"
+    url_qfo = "ftp://ftp.ebi.ac.uk/pub/databases/reference_proteomes/previous_releases/qfo_release-2020_04_with_updated_UP000008143/QfO_release_2020_04_with_updated_UP000008143.tar.gz"
     fn_qfo = url_qfo.split("/")[-1]
     url_orthobench = "https://github.com/davidemms/Open_Orthobench/releases/download/v1.1/BENCHMARKS.tar.gz"
     fn_orthobench = "BENCHMARKS.tar.gz"
     if not os.path.exists(fn_orthobench):
         print("Downloading Orthobench data")
-        urllib.urlretrieve(url_orthobench, fn_orthobench)
+        urlretrieve(url_orthobench, fn_orthobench)
         tar = tarfile.open(fn_orthobench)
         tar.extractall()
         tar.close()
@@ -222,7 +247,7 @@ if __name__ == "__main__":
     d_fasta_ob = "BENCHMARKS/Input/"
     if not os.path.exists(fn_qfo):
         print("Downloading QfO data")
-        #urllib.urlretrieve(url_qfo, fn_qfo)
+        urlretrieve(url_qfo, fn_qfo)
         tar = tarfile.open(fn_qfo)
         mem = tar.getmembers()
         required = [f for f in mem if re.match("Eukaryota.*\d+\.fasta", f.name)]
@@ -234,7 +259,8 @@ if __name__ == "__main__":
     d_qfo = "Eukaryota/"
     url_ob_gene_ids = "https://github.com/davidemms/Open_Orthobench/blob/master/Supporting_Data/Additional_Files/gene_to_transcript_map.txt?raw=true"
     fn_ob_gene_ids = "gene_to_transcript_map.txt"
-    urllib.urlretrieve(url_ob_gene_ids, fn_ob_gene_ids)
+    if not os.path.exists(fn_ob_gene_ids):
+        urlretrieve(url_ob_gene_ids, fn_ob_gene_ids)
 
     # Params
     species_exclude = ["Tetraodon_nigroviridis", ]
@@ -244,9 +270,13 @@ if __name__ == "__main__":
     # print_untar_command(fns)
 
     # 1. Get all orthobench sequences
-    seq_ob = get_orthobench_seqs(d_fasta_ob, species_exclude)
+    seq_ob_prot = get_orthobench_seqs(d_fasta_ob, species_exclude)
     d_prot_2_gene_ob = get_orthobench_prot_2_gene(fn_ob_gene_ids)
-    seq_ob = [d_prot_2_gene_ob[p] for p in seq_ob]
+    d_gene_2_prot_ob = {v: k for k, v in d_prot_2_gene_ob.items()}
+    assert len(d_gene_2_prot_ob) == len(d_prot_2_gene_ob), "no 1:1 mapping between gene and prot ids in orthobench"
+    seq_ob_gene = [d_prot_2_gene_ob[p] for p in seq_ob_prot]
+    # filter mapping gene->prot to only existing proteins in orthobench set
+    d_gene_2_prot_ob = {gene: d_gene_2_prot_ob[gene] for gene in seq_ob_gene}
     # seq_ob = get_orthobench_genes_from_map_file(fn_ob_gene_ids)
 
     # 2. Get all qfo sequences
@@ -260,10 +290,15 @@ if __name__ == "__main__":
     # if q_per_species:
     #     for seqs_qfo, sp in zip(seqs_qfo_per_species, species):
     #         print("\n" + sp)
-    #         compare(seq_ob, seqs_qfo, d_qfo_2_ob)
+    #         compare(seq_ob_gene, seqs_qfo, d_qfo_2_ob)
     # else:
-    #     compare(seq_ob, seqs_qfo, d_qfo_2_ob)
+    #     compare(seq_ob_gene, seqs_qfo, d_qfo_2_ob)
 
     # 6. Find matches for Orthobench sequences
-    find_matches(seq_ob, seqs_qfo, d_ob_2_qfo)
+    find_matches(seq_ob_gene, seqs_qfo, d_ob_2_qfo)
+
+    # 7. write out the mapping file from OB to QfO identifiers that are uniq
+    with gzip.open("ob_to_qfo.txt.gz", 'wt', encoding="utf-8") as fh:
+        write_mapping_file(fh, d_gene_2_prot_ob, seqs_qfo, d_ob_2_qfo)
+
 
